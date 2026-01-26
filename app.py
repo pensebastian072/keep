@@ -462,7 +462,7 @@ def backtest_explorer_page():
     st.download_button(
         label="📥 Download Filtered Backtest Data (CSV)",
         data=csv_data,
-        file_name=f"filtered_backtest_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+        file_name=f"filtered_backtest_{datetime.now().strftime('%Y%m%d')}.csv",
         mime="text/csv",
         help="Download the currently filtered backtest results"
     )
