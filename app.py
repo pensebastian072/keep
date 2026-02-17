@@ -1,164 +1,4 @@
 """
-Streamlit dashboard for Copper Brain v2
-"""
-import os
-import subprocess
-from datetime import datetime
-
-import pandas as pd
-import numpy as np
-import streamlit as st
-import plotly.express as px
-import plotly.graph_objects as go
-import shap
-
-OUTPUTS_DIR = "outputs"
-BACKTEST_CSV = os.path.join(OUTPUTS_DIR, "backtest_results.csv")
-MODEL_PKL = os.path.join(OUTPUTS_DIR, "model.pkl")
-
-
-st.set_page_config(page_title="Copper Brain v2", layout="wide")
-
-
-@st.cache_data(ttl=600)
-def load_backtest():
-    if not os.path.exists(BACKTEST_CSV):
-        return None
-    df = pd.read_csv(BACKTEST_CSV, parse_dates=["date"], index_col="date")
-    return df
-
-
-@st.cache_resource
-def load_model():
-    if not os.path.exists(MODEL_PKL):
-        return None
-    import pickle
-    with open(MODEL_PKL, "rb") as f:
-        model = pickle.load(f)
-    return model
-
-
-def retrain_model():
-    # Run the training script
-    proc = subprocess.Popen(["python", "copper_brain_v2.py"], cwd=os.getcwd())
-    return proc
-
-
-def main():
-    st.title("Copper Brain v2 — Directional Forecast Explorer")
-
-    # Sidebar controls
-    st.sidebar.header("Settings")
-    horizon = st.sidebar.selectbox("Horizon", [7, 21, 42], index=1)
-    threshold = st.sidebar.slider("Probability threshold", 0.1, 0.9, 0.45, 0.01)
-    retrain = st.sidebar.button("Retrain model")
-
-    if retrain:
-        with st.spinner("Retraining model (this may take a few minutes)..."):
-            proc = retrain_model()
-            proc.wait()
-            st.success("Retrain finished.")
-
-    backtest_df = load_backtest()
-    model = load_model()
-
-    st.header("Overview")
-    st.markdown("Copper Brain v2 predicts 21-day ahead direction for COMEX copper futures using XGBoost and walk-forward backtesting.")
-
-    if backtest_df is None:
-        st.warning("No backtest results found. Run training first (click Retrain).")
-        return
-
-    # Metrics
-    overall_acc = (backtest_df['pred'] == backtest_df['actual']).mean()
-    overall_prec = (backtest_df['pred'][backtest_df['pred']==1] == backtest_df['actual'][backtest_df['pred']==1]).mean()
-    overall_f1 = None
-    try:
-        from sklearn.metrics import f1_score
-        overall_f1 = f1_score(backtest_df['actual'], backtest_df['pred'])
-    except Exception:
-        overall_f1 = None
-
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Directional Accuracy", f"{overall_acc:.3f}")
-    col2.metric("Precision", f"{overall_prec:.3f}")
-    col3.metric("F1", f"{overall_f1:.3f}" if overall_f1 is not None else "n/a")
-
-    st.header("Backtest Explorer")
-
-    # Line chart: predicted vs actual
-    df_plot = backtest_df.copy()
-    df_plot['pred_dir'] = df_plot['pred']
-    df_plot['actual_dir'] = df_plot['actual']
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(x=df_plot.index, y=df_plot['prob'], name='Predicted probability'))
-    fig.add_trace(go.Scatter(x=df_plot.index, y=df_plot['pred'], name='Predicted direction'))
-    fig.add_trace(go.Scatter(x=df_plot.index, y=df_plot['actual'], name='Actual direction'))
-    st.plotly_chart(fig, use_container_width=True)
-
-    st.subheader("Probability Distribution")
-    st.plotly_chart(px.histogram(backtest_df, x='prob', nbins=50), use_container_width=True)
-
-    st.subheader("Confusion Matrix")
-    try:
-        from sklearn.metrics import confusion_matrix
-        cm = confusion_matrix(backtest_df['actual'], backtest_df['pred'])
-        cm_df = pd.DataFrame(cm, index=["Actual 0","Actual 1"], columns=["Pred 0","Pred 1"])
-        st.write(cm_df)
-    except Exception:
-        st.write("Could not compute confusion matrix")
-
-    st.header("Feature Importance & SHAP")
-    if model is not None:
-        try:
-            importances = model.feature_importances_
-            feat_names = model.get_booster().feature_names if hasattr(model, 'get_booster') else None
-            if feat_names is None:
-                # Attempt to read feature names from backtest if stored
-                feat_names = [f"f{i}" for i in range(len(importances))]
-            imp_df = pd.DataFrame({'feature': feat_names, 'importance': importances})
-            imp_df = imp_df.sort_values('importance', ascending=False).head(25)
-            st.plotly_chart(px.bar(imp_df, x='importance', y='feature', orientation='h'), use_container_width=True)
-
-            # SHAP (sampled)
-            st.subheader("SHAP summary (sample)")
-            # Create sample input for shap
-            try:
-                # Load training features from data if available
-                import pickle
-                with open(MODEL_PKL, 'rb') as f:
-                    pass
-            except Exception:
-                pass
-            # Attempt to compute SHAP values on a sample (may be slow)
-            try:
-                explainer = shap.Explainer(model)
-                sample_X = backtest_df.drop(columns=['window_id','train_start','train_end','prob','pred','actual','correct','cumulative_accuracy'], errors='ignore').dropna().head(500)
-                shap_vals = explainer(sample_X)
-                st.pyplot(shap.plots.beeswarm(shap_vals, show=False))
-            except Exception:
-                st.info("SHAP not available or failed to compute.")
-        except Exception as e:
-            st.write("Could not load feature importances:", e)
-    else:
-        st.info("No trained model found in outputs/model.pkl")
-
-    st.header("Recent Predictions")
-    recent = backtest_df.tail(30).copy()
-    recent_display = recent[['prob','pred','actual']].copy()
-    recent_display.index = recent_display.index.strftime('%Y-%m-%d')
-    st.dataframe(recent_display)
-
-    st.header("Backtest Threshold Tuning")
-    thr = st.slider("Adjust threshold to recompute predictions", 0.1, 0.9, float(threshold), 0.01)
-    recomputed_preds = (backtest_df['prob'] >= thr).astype(int)
-    new_acc = (recomputed_preds == backtest_df['actual']).mean()
-    st.metric("Recomputed accuracy", f"{new_acc:.3f}")
-
-
-if __name__ == '__main__':
-    main()
-"""
 Copper Brain v2 - Interactive Dashboard
 ========================================
 Comprehensive Streamlit dashboard for copper direction prediction analysis.
@@ -175,6 +15,8 @@ from datetime import datetime, timedelta
 import os
 import sys
 import joblib
+from sklearn.metrics import accuracy_score, confusion_matrix
+import io
 
 # Add current directory to path
 sys.path.append(os.path.dirname(__file__))
@@ -325,6 +167,60 @@ def overview_page():
             <div class="metric-label">ROC-AUC</div>
         </div>
         """, unsafe_allow_html=True)
+
+    # Download Section
+    st.markdown("---")
+    st.subheader("💾 Download Data")
+    
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        # Download backtest results as CSV
+        csv_buffer = io.StringIO()
+        backtest_df.to_csv(csv_buffer, index=False)
+        csv_data = csv_buffer.getvalue()
+        
+        st.download_button(
+            label="📥 Download Backtest Results (CSV)",
+            data=csv_data,
+            file_name=f"backtest_results_{datetime.now().strftime('%Y%m%d')}.csv",
+            mime="text/csv",
+            help="Download complete backtest results with predictions and actuals"
+        )
+    
+    with col2:
+        # Download performance metrics as TXT
+        st.download_button(
+            label="📥 Download Performance Metrics (TXT)",
+            data=metrics_text,
+            file_name=f"performance_metrics_{datetime.now().strftime('%Y%m%d')}.txt",
+            mime="text/plain",
+            help="Download detailed performance metrics report"
+        )
+    
+    with col3:
+        # Download summary report as CSV
+        summary_data = {
+            'Metric': ['Accuracy', 'Precision', 'F1 Score', 'ROC-AUC', 
+                      'True Positives', 'True Negatives', 'False Positives', 'False Negatives'],
+            'Value': [
+                f"{accuracy:.4f}", f"{precision:.4f}", f"{f1:.4f}", f"{roc_auc:.4f}",
+                metrics.get('true_positives', 0), metrics.get('true_negatives', 0),
+                metrics.get('false_positives', 0), metrics.get('false_negatives', 0)
+            ]
+        }
+        summary_df = pd.DataFrame(summary_data)
+        summary_csv = summary_df.to_csv(index=False)
+        
+        st.download_button(
+            label="📥 Download Summary Report (CSV)",
+            data=summary_csv,
+            file_name=f"summary_report_{datetime.now().strftime('%Y%m%d')}.csv",
+            mime="text/csv",
+            help="Download summary metrics as CSV"
+        )
+    
+    st.markdown("---")
 
     # Model info
     st.subheader("📊 Model Information")
@@ -548,6 +444,29 @@ def backtest_explorer_page():
 
     st.plotly_chart(fig, use_container_width=True)
 
+    # Download filtered results
+    st.markdown("---")
+    st.subheader("💾 Download Filtered Results")
+    
+    # Prepare filtered data for download
+    download_df = filtered_df[['date', 'close_price', 'prediction_probability', 
+                                'predicted_direction', 'actual_direction', 
+                                'predicted_with_new_threshold']].copy()
+    download_df['date'] = download_df['date'].dt.strftime('%Y-%m-%d')
+    download_df['correct_prediction'] = (download_df['actual_direction'] == download_df['predicted_with_new_threshold'])
+    
+    csv_buffer = io.StringIO()
+    download_df.to_csv(csv_buffer, index=False)
+    csv_data = csv_buffer.getvalue()
+    
+    st.download_button(
+        label="📥 Download Filtered Backtest Data (CSV)",
+        data=csv_data,
+        file_name=f"filtered_backtest_{datetime.now().strftime('%Y%m%d')}.csv",
+        mime="text/csv",
+        help="Download the currently filtered backtest results"
+    )
+
 def feature_importance_page():
     """Feature importance and SHAP analysis page."""
     st.header("🔍 Feature Importance Analysis")
@@ -621,6 +540,40 @@ def feature_importance_page():
     fig.update_layout(height=500)
 
     st.plotly_chart(fig, use_container_width=True)
+
+    # Download feature importance data
+    st.markdown("---")
+    st.subheader("💾 Download Feature Importance Data")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        # Download all feature importances
+        csv_buffer = io.StringIO()
+        importance_df.to_csv(csv_buffer, index=False)
+        csv_data = csv_buffer.getvalue()
+        
+        st.download_button(
+            label="📥 Download All Feature Importances (CSV)",
+            data=csv_data,
+            file_name=f"feature_importances_{datetime.now().strftime('%Y%m%d')}.csv",
+            mime="text/csv",
+            help="Download complete feature importance rankings"
+        )
+    
+    with col2:
+        # Download category importances
+        cat_csv = cat_df.to_csv(index=False)
+        
+        st.download_button(
+            label="📥 Download Category Importances (CSV)",
+            data=cat_csv,
+            file_name=f"category_importances_{datetime.now().strftime('%Y%m%d')}.csv",
+            mime="text/csv",
+            help="Download aggregated importance by feature category"
+        )
+    
+    st.markdown("---")
 
     # SHAP Analysis (if available)
     st.subheader("🎯 SHAP Analysis")
@@ -739,6 +692,28 @@ def recent_predictions_page():
     st.plotly_chart(fig, use_container_width=True)
 
     st.caption("🟢 Green markers = Correct predictions | 🔴 Red markers = Incorrect predictions")
+
+    # Download recent predictions
+    st.markdown("---")
+    st.subheader("💾 Download Recent Predictions")
+    
+    # Prepare download data (clean version without emojis)
+    download_df = recent_df[['date', 'close_price', 'prediction_probability', 
+                              'predicted_direction', 'actual_direction']].copy()
+    download_df['date'] = download_df['date'].dt.strftime('%Y-%m-%d')
+    download_df['correct_prediction'] = (download_df['actual_direction'] == download_df['predicted_direction'])
+    
+    csv_buffer = io.StringIO()
+    download_df.to_csv(csv_buffer, index=False)
+    csv_data = csv_buffer.getvalue()
+    
+    st.download_button(
+        label="📥 Download Recent Predictions (CSV)",
+        data=csv_data,
+        file_name=f"recent_predictions_{datetime.now().strftime('%Y%m%d')}.csv",
+        mime="text/csv",
+        help="Download last 30 days of predictions"
+    )
 
 def settings_page():
     """Settings and model management page."""

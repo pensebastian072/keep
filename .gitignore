@@ -63,3 +63,6 @@ data/
 
 # Logs
 *.log
+
+# Backup files
+*.backup

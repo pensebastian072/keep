@@ -85,11 +85,24 @@ python -m streamlit run app.py
 
 ## Dashboard Views
 
-1. **Overview**: Project description, metrics summary
-2. **Backtest Explorer**: Charts, confusion matrix, threshold tuning
-3. **Feature Importance**: XGBoost importances, SHAP plots
-4. **Recent Predictions**: Last 30 days with probabilities
+1. **Overview**: Project description, metrics summary, download backtest results and performance metrics
+2. **Backtest Explorer**: Charts, confusion matrix, threshold tuning, download filtered results
+3. **Feature Importance**: XGBoost importances, SHAP plots, download feature importance data
+4. **Recent Predictions**: Last 30 days with probabilities, download recent predictions
 5. **Settings**: Retrain, horizon selection, threshold adjustment
+
+## Download Features
+
+The dashboard includes comprehensive download functionality to export data to your computer:
+
+- **Backtest Results**: Complete historical predictions with probabilities and outcomes (CSV)
+- **Performance Metrics**: Detailed model performance report (TXT)
+- **Summary Report**: Key metrics in tabular format (CSV)
+- **Filtered Results**: Export filtered backtest data based on your selected criteria (CSV)
+- **Feature Importance**: Full feature rankings and category breakdowns (CSV)
+- **Recent Predictions**: Last 30 days of predictions with price data (CSV)
+
+All downloads include timestamps in the filename for easy organization.
 
 ## License
 
